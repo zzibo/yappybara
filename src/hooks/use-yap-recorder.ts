@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { parsePhraseResult } from "@/lib/azure/parse-result";
+import type { WordScore } from "@/types";
 
 // ── State machine ────────────────────────────────────────────────────────────
 
@@ -19,6 +21,13 @@ export interface YapRecorderReturn {
   state: YapRecorderState;
   /** Accumulated finalized transcript (all `recognized` phrases joined). */
   transcript: string;
+  /**
+   * Per-word pronunciation-scored words, in order of recognition.
+   * Populated from Azure Pronunciation Assessment in unscripted mode
+   * (empty reference text). Each word carries an `accuracyScore` so the
+   * transcript can color words red/yellow/green in real time.
+   */
+  scoredWords: WordScore[];
   /** Current interim text (from last `recognizing` event). */
   interimText: string;
   /** Milliseconds remaining in the 2-minute window. */
@@ -36,17 +45,25 @@ export interface YapRecorderReturn {
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
- * Plain continuous speech-to-text recorder for the Yap mode.
+ * Continuous speech recorder for the Yap mode.
+ *
+ * Uses Azure Pronunciation Assessment in UNSCRIPTED mode (empty reference
+ * text) to get per-word accuracy scores even when the user is speaking
+ * freely about a topic. This lets us color the transcript red/yellow/green
+ * in real time, just like grind mode.
  *
  * Differences from `use-realtime-recorder`:
- *   - No PronunciationAssessmentConfig (plain STT only)
- *   - Accumulates a raw transcript string instead of mapping to reference words
+ *   - No reference text (empty string = unscripted assessment)
+ *   - Accumulates a raw transcript string AND a parallel `scoredWords` array
+ *   - No reference-based word matching (`scoredWords` is append-only, in
+ *     recognition order — there's no "expected" text to align against)
  *   - Auto-stops at YAP_DURATION_MS
  *   - Exposes a countdown via `remainingMs`
  */
 export function useYapRecorder(): YapRecorderReturn {
   const [state, setState] = useState<YapRecorderState>("idle");
   const [transcript, setTranscript] = useState("");
+  const [scoredWords, setScoredWords] = useState<WordScore[]>([]);
   const [interimText, setInterimText] = useState("");
   const [remainingMs, setRemainingMs] = useState(YAP_DURATION_MS);
   const [durationMs, setDurationMs] = useState(0);
@@ -137,6 +154,7 @@ export function useYapRecorder(): YapRecorderReturn {
   const start = useCallback(
     async (token: string, region: string) => {
       setTranscript("");
+      setScoredWords([]);
       setInterimText("");
       setAudioBlob(null);
       setError(null);
@@ -168,15 +186,28 @@ export function useYapRecorder(): YapRecorderReturn {
         return;
       }
 
-      // 3. SpeechConfig — plain STT, no pronunciation assessment
+      // 3. SpeechConfig
       const speechConfig = SDK.SpeechConfig.fromAuthorizationToken(token, region);
       speechConfig.speechRecognitionLanguage = "en-US";
+      // Reduce segmentation silence so phrase-level scoring fires more often
+      // (same as grind mode — gives snappier real-time coloring).
+      speechConfig.setProperty("Speech_SegmentationSilenceTimeoutMs", "500");
 
       // 4. AudioConfig from existing stream
       const audioConfig = SDK.AudioConfig.fromStreamInput(stream);
 
-      // 5. SpeechRecognizer (no PronunciationAssessmentConfig)
+      // 5. SpeechRecognizer + unscripted PronunciationAssessment.
+      //    Empty reference text = "score the audio against whatever was said,
+      //    no expected words" — gives per-word AccuracyScore for free-form speech.
       const recognizer = new SDK.SpeechRecognizer(speechConfig, audioConfig);
+      const pronunciationConfig = new SDK.PronunciationAssessmentConfig(
+        "", // unscripted
+        SDK.PronunciationAssessmentGradingSystem.HundredMark,
+        SDK.PronunciationAssessmentGranularity.Phoneme,
+        false,
+      );
+      pronunciationConfig.enableProsodyAssessment = true;
+      pronunciationConfig.applyTo(recognizer);
       recognizerRef.current = recognizer;
 
       // 6. MediaRecorder for audio capture
@@ -207,6 +238,17 @@ export function useYapRecorder(): YapRecorderReturn {
         if (!text) return;
         setTranscript((prev) => (prev ? `${prev} ${text}` : text));
         setInterimText("");
+
+        // Parse per-word pronunciation scores and append to scoredWords.
+        // Insertions are skipped — in unscripted mode Azure shouldn't emit
+        // them, but drop defensively so the rendered transcript stays clean.
+        const phrase = parsePhraseResult(event.result);
+        if (phrase) {
+          const newWords = phrase.words.filter((w) => w.errorType !== "insertion");
+          if (newWords.length > 0) {
+            setScoredWords((prev) => [...prev, ...newWords]);
+          }
+        }
       };
 
       recognizer.canceled = (_sender, event) => {
@@ -263,6 +305,7 @@ export function useYapRecorder(): YapRecorderReturn {
     recognizerRef.current = null;
     setState("idle");
     setTranscript("");
+    setScoredWords([]);
     setInterimText("");
     setRemainingMs(YAP_DURATION_MS);
     setDurationMs(0);
@@ -292,6 +335,7 @@ export function useYapRecorder(): YapRecorderReturn {
   return {
     state,
     transcript,
+    scoredWords,
     interimText,
     remainingMs,
     durationMs,

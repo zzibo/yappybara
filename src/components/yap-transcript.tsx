@@ -1,22 +1,35 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { WordScore } from "@/types";
 
 type YapTranscriptProps = {
-  transcript: string;
+  /**
+   * Words with per-word pronunciation accuracy scores. Rendered red/yellow/
+   * green based on accuracy in real time as the user speaks.
+   */
+  scoredWords: WordScore[];
+  /** Unconfirmed text from the latest `recognizing` event — shown dim. */
   interimText: string;
 };
 
-export function YapTranscript({ transcript, interimText }: YapTranscriptProps) {
+/** Map a 0-100 pronunciation score to the same color palette grind mode uses. */
+function colorFor(score: number): string {
+  if (score >= 80) return "var(--yb-correct)";
+  if (score >= 50) return "var(--yb-partial)";
+  return "var(--yb-error)";
+}
+
+export function YapTranscript({ scoredWords, interimText }: YapTranscriptProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom as new text comes in
   useEffect(() => {
     const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [transcript, interimText]);
+  }, [scoredWords, interimText]);
 
-  const isEmpty = !transcript && !interimText;
+  const isEmpty = scoredWords.length === 0 && !interimText;
 
   return (
     <div
@@ -48,19 +61,28 @@ export function YapTranscript({ transcript, interimText }: YapTranscriptProps) {
         </span>
       ) : (
         <>
-          <span>{transcript}</span>
+          {scoredWords.map((w, i) => (
+            <span
+              // eslint-disable-next-line react/no-array-index-key
+              key={i}
+              style={{
+                color: colorFor(w.accuracyScore),
+                transition: "color 200ms ease",
+              }}
+            >
+              {w.word}
+              {i < scoredWords.length - 1 || interimText ? " " : ""}
+            </span>
+          ))}
           {interimText && (
-            <>
-              {transcript && " "}
-              <span
-                style={{
-                  color: "var(--yb-text-sub)",
-                  opacity: 0.6,
-                }}
-              >
-                {interimText}
-              </span>
-            </>
+            <span
+              style={{
+                color: "var(--yb-text-sub)",
+                opacity: 0.55,
+              }}
+            >
+              {interimText}
+            </span>
           )}
         </>
       )}
