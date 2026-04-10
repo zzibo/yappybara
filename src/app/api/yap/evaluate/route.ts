@@ -3,29 +3,55 @@ import { type NextRequest, NextResponse } from "next/server";
 import type { YapDimension, YapDimensionScore, YapResult } from "@/types";
 
 // ── Rate limiter ─────────────────────────────────────────────────────────────
+//
+// Each yap is ≥2 min + processing, so a legitimate user can't realistically
+// trigger more than ~2 evaluations per minute. We enforce TWO overlapping
+// windows:
+//   - per-minute burst cap (catches fast abuse)
+//   - per-hour sustained cap (catches slow, paced abuse)
+//
+// Both buckets are in-memory — this is best-effort protection on a single
+// serverless instance. For real throughput protection use Upstash Redis.
 
 interface RateLimitBucket {
   count: number;
   windowStart: number;
 }
 
-const rateLimitMap = new Map<string, RateLimitBucket>();
-const RATE_LIMIT_MAX = 10;
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const minuteMap = new Map<string, RateLimitBucket>();
+const hourMap = new Map<string, RateLimitBucket>();
 
-function isRateLimited(ip: string): boolean {
+const MINUTE_MAX = 2;
+const MINUTE_WINDOW_MS = 60 * 1000;
+const HOUR_MAX = 20;
+const HOUR_WINDOW_MS = 60 * 60 * 1000;
+
+/** Max transcript length sent to Claude. 2 min of speech ≈ ~400 words / ~2500
+ *  chars — 8KB is a generous ceiling that still caps worst-case token cost. */
+const MAX_TRANSCRIPT_CHARS = 8000;
+
+function tickBucket(
+  map: Map<string, RateLimitBucket>,
+  ip: string,
+  max: number,
+  windowMs: number,
+): boolean {
   const now = Date.now();
-  const bucket = rateLimitMap.get(ip);
-
-  if (!bucket || now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(ip, { count: 1, windowStart: now });
+  const bucket = map.get(ip);
+  if (!bucket || now - bucket.windowStart >= windowMs) {
+    map.set(ip, { count: 1, windowStart: now });
     return false;
   }
-
-  if (bucket.count >= RATE_LIMIT_MAX) return true;
-
+  if (bucket.count >= max) return true;
   bucket.count += 1;
   return false;
+}
+
+function isRateLimited(ip: string): boolean {
+  return (
+    tickBucket(minuteMap, ip, MINUTE_MAX, MINUTE_WINDOW_MS) ||
+    tickBucket(hourMap, ip, HOUR_MAX, HOUR_WINDOW_MS)
+  );
 }
 
 // ── Rubric & prompt ──────────────────────────────────────────────────────────
@@ -196,6 +222,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   if (transcript.length < 20) {
     return NextResponse.json({ error: "Transcript too short to evaluate" }, { status: 400 });
+  }
+
+  if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+    return NextResponse.json({ error: "Transcript too long" }, { status: 413 });
   }
 
   // Validate env
