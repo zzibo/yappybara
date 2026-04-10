@@ -297,7 +297,7 @@ export function YapMode() {
       {phase === "recording" && (
         <>
           <YapTimer remainingMs={recorder.remainingMs} totalMs={YAP_DURATION_MS} />
-          <YapTranscript transcript={recorder.transcript} interimText={recorder.interimText} />
+          <YapTranscript scoredWords={recorder.scoredWords} interimText={recorder.interimText} />
           <div style={{ width: "100%", maxWidth: "500px" }}>
             <Waveform mediaStream={recorder.mediaStream} isActive={true} />
           </div>
@@ -318,7 +318,7 @@ export function YapMode() {
             evaluating your explanation...
           </div>
           {/* Show transcript under processing so user sees what was captured */}
-          <YapTranscript transcript={recorder.transcript} interimText="" />
+          <YapTranscript scoredWords={recorder.scoredWords} interimText="" />
           <style>{`
             @keyframes pulse {
               0%, 100% { opacity: 0.5; }
