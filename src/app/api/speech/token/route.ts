@@ -22,7 +22,9 @@ interface RateLimitBucket {
 
 const rateLimitMap = new Map<string, RateLimitBucket>();
 
-const RATE_LIMIT_MAX = 10;
+// Tokens are cached for 9 minutes and auto-refreshed, so 5/min per IP is
+// plenty for any legitimate client. Anything higher signals scraping.
+const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 function isRateLimited(ip: string): boolean {
