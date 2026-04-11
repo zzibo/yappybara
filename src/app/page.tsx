@@ -235,8 +235,12 @@ export default function Home() {
 
   return (
     <div
-      className="flex flex-col items-center justify-center w-full h-full select-none"
-      style={{ backgroundColor: "var(--yb-bg)" }}
+      className="flex flex-col items-center w-full min-h-screen select-none"
+      style={{
+        backgroundColor: "var(--yb-bg)",
+        // Top padding clears the fixed logo; bottom padding clears the fixed hint bar
+        padding: "72px 0 72px",
+      }}
     >
       {/* Logo */}
       <div
@@ -256,7 +260,15 @@ export default function Home() {
 
       <main
         className="flex flex-col items-center gap-8"
-        style={{ maxWidth: "700px", width: "100%", padding: "0 24px" }}
+        style={{
+          maxWidth: "700px",
+          width: "100%",
+          padding: "0 24px",
+          // Auto top+bottom margin: vertically centers main when content is
+          // shorter than the viewport, and collapses to zero when content
+          // overflows so the page scrolls naturally.
+          margin: "auto 0",
+        }}
       >
         {/* Mode toggle (grind vs yap) */}
         <ModeToggle
