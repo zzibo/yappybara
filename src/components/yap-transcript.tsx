@@ -5,20 +5,16 @@ import type { WordScore } from "@/types";
 
 type YapTranscriptProps = {
   /**
-   * Words with per-word pronunciation accuracy scores. Rendered red/yellow/
-   * green based on accuracy in real time as the user speaks.
+   * Words captured so far, carrying per-word pronunciation scores from Azure
+   * (unscripted assessment). We keep the scores on the data model — we might
+   * surface them in the results view later — but we don't colorize them in the
+   * live transcript. During the yap itself, colored words are distracting
+   * rather than helpful; the user just wants to see what they're saying.
    */
   scoredWords: WordScore[];
   /** Unconfirmed text from the latest `recognizing` event — shown dim. */
   interimText: string;
 };
-
-/** Map a 0-100 pronunciation score to the same color palette grind mode uses. */
-function colorFor(score: number): string {
-  if (score >= 80) return "var(--yb-correct)";
-  if (score >= 50) return "var(--yb-partial)";
-  return "var(--yb-error)";
-}
 
 export function YapTranscript({ scoredWords, interimText }: YapTranscriptProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -61,19 +57,10 @@ export function YapTranscript({ scoredWords, interimText }: YapTranscriptProps) 
         </span>
       ) : (
         <>
-          {scoredWords.map((w, i) => (
-            <span
-              // eslint-disable-next-line react/no-array-index-key
-              key={i}
-              style={{
-                color: colorFor(w.accuracyScore),
-                transition: "color 200ms ease",
-              }}
-            >
-              {w.word}
-              {i < scoredWords.length - 1 || interimText ? " " : ""}
-            </span>
-          ))}
+          <span>
+            {scoredWords.map((w) => w.word).join(" ")}
+            {scoredWords.length > 0 && interimText ? " " : ""}
+          </span>
           {interimText && (
             <span
               style={{
