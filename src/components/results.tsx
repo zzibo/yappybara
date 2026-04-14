@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DetailedFeedback } from "@/lib/feedback";
 import { computeGrade } from "@/lib/scoring";
-import type { PracticeResult } from "@/types";
+import type { CoachNotes, PracticeResult } from "@/types";
 
 type ResultsProps = {
   result: PracticeResult;
+  referenceText: string;
 };
 
 const GRADE_COLORS: Record<string, string> = {
@@ -214,11 +215,210 @@ function DetailedFeedbackPanel({ feedback }: { feedback: DetailedFeedback }) {
   );
 }
 
+// ── Coach Notes (async, Claude-powered) ─────────────────────────────────────
+
+function CoachNotesPanel({ notes }: { notes: CoachNotes }) {
+  return (
+    <div
+      style={{
+        width: "100%",
+        maxWidth: "50ch",
+        display: "flex",
+        flexDirection: "column",
+        gap: "4px",
+        marginTop: "4px",
+      }}
+    >
+      <div
+        style={{
+          fontSize: "0.7rem",
+          textTransform: "uppercase",
+          letterSpacing: "0.12em",
+          color: "var(--yb-main)",
+          fontFamily: "var(--font-mono)",
+          marginBottom: "2px",
+        }}
+      >
+        coach&apos;s notes
+      </div>
+
+      {notes.tips.map((tip, i) => (
+        <FeedbackSection key={i} title={tip.focus} borderColor="var(--yb-main)">
+          {tip.advice}
+        </FeedbackSection>
+      ))}
+
+      {notes.drill && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: "6px",
+            backgroundColor: "var(--yb-bg-sub)",
+            border: "1px solid var(--yb-main)",
+            borderLeftWidth: "3px",
+            fontSize: "0.85rem",
+            color: "var(--yb-text)",
+            fontFamily: "var(--font-sans)",
+            lineHeight: 1.5,
+          }}
+        >
+          <div
+            style={{
+              fontSize: "0.7rem",
+              textTransform: "uppercase",
+              letterSpacing: "0.1em",
+              color: "var(--yb-main)",
+              marginBottom: "4px",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            try this now
+          </div>
+          {notes.drill}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoachNotesLoading() {
+  return (
+    <div
+      style={{
+        width: "100%",
+        maxWidth: "50ch",
+        marginTop: "4px",
+        padding: "10px 12px",
+        borderRadius: "6px",
+        fontSize: "0.8rem",
+        color: "var(--yb-text-sub)",
+        fontFamily: "var(--font-mono)",
+        animation: "pulse 1.5s ease-in-out infinite",
+      }}
+    >
+      generating coach&apos;s notes...
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 0.8; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/** Build the API payload from PracticeResult data. */
+function buildCoachPayload(result: PracticeResult, referenceText: string) {
+  // Extract hesitation gaps from word timing
+  const hesitations: { word: string; gapMs: number }[] = [];
+  for (let i = 0; i < result.words.length - 1; i++) {
+    const curr = result.words[i];
+    const next = result.words[i + 1];
+    if (curr.offsetMs != null && curr.durationMs != null && next.offsetMs != null) {
+      const gap = next.offsetMs - (curr.offsetMs + curr.durationMs);
+      if (gap > 800) {
+        hesitations.push({ word: next.word, gapMs: gap });
+      }
+    }
+  }
+
+  // Extract struggle words — get phoneme from word data, tip from feedback
+  const struggleWords = (result.detailedFeedback?.struggleWords ?? []).map((sw) => {
+    // Find the matching word in result.words to get phoneme data
+    const wordData = result.words.find(
+      (w) => w.word.toLowerCase() === sw.word.toLowerCase() && w.accuracyScore < 80,
+    );
+    const worstPhoneme =
+      wordData?.phonemes.reduce(
+        (a, b) => (a.accuracyScore <= b.accuracyScore ? a : b),
+        wordData.phonemes[0],
+      ) ?? null;
+    return {
+      word: sw.word,
+      score: sw.score,
+      phoneme: worstPhoneme && worstPhoneme.accuracyScore < 70 ? worstPhoneme.phoneme : null,
+      phonemeTip: sw.phonemeTip,
+    };
+  });
+
+  // Extract pace segments from words
+  const timed = result.words.filter((w) => w.offsetMs != null && w.durationMs != null);
+  let paceSegments: { startWpm: number; endWpm: number; averageWpm: number } | null = null;
+  if (timed.length >= 6) {
+    const third = Math.ceil(timed.length / 3);
+    const firstSeg = timed.slice(0, third);
+    const lastSeg = timed.slice(third * 2);
+
+    const segWpm = (seg: typeof timed) => {
+      const dur =
+        seg[seg.length - 1].offsetMs! + seg[seg.length - 1].durationMs! - seg[0].offsetMs!;
+      return dur > 0 ? Math.round((seg.length / dur) * 60_000) : 0;
+    };
+
+    paceSegments = {
+      startWpm: segWpm(firstSeg),
+      endWpm: segWpm(lastSeg),
+      averageWpm: result.wpm,
+    };
+  }
+
+  return {
+    referenceText,
+    overallScore: result.overallScore,
+    accuracyScore: result.accuracyScore,
+    fluencyScore: result.fluencyScore,
+    completenessScore: result.completenessScore,
+    prosodyScore: result.prosodyScore,
+    wpm: result.wpm,
+    durationMs: result.durationMs,
+    hesitations,
+    struggleWords,
+    skippedWords: result.detailedFeedback?.skippedWords ?? [],
+    paceSegments,
+  };
+}
+
 // ── Main Results component ───────────────────────────────────────────────────
 
-export function Results({ result }: ResultsProps) {
+export function Results({ result, referenceText }: ResultsProps) {
   const grade = computeGrade(result.overallScore);
   const gradeColor = GRADE_COLORS[grade];
+
+  // Async coach notes
+  const [coachNotes, setCoachNotes] = useState<CoachNotes | null>(null);
+  const [coachLoading, setCoachLoading] = useState(false);
+  const fetchedRef = useRef<number | null>(null);
+
+  const fetchCoachNotes = useCallback(async () => {
+    setCoachLoading(true);
+    try {
+      const payload = buildCoachPayload(result, referenceText);
+      const res = await fetch("/api/grind/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        console.error("[coach] API error:", res.status);
+        return;
+      }
+      const data = (await res.json()) as CoachNotes;
+      setCoachNotes(data);
+    } catch (err) {
+      console.error("[coach] failed:", err);
+    } finally {
+      setCoachLoading(false);
+    }
+  }, [result, referenceText]);
+
+  useEffect(() => {
+    // Only fetch once per result (use overallScore + durationMs as identity)
+    const identity = result.overallScore * 10000 + result.durationMs;
+    if (fetchedRef.current === identity) return;
+    fetchedRef.current = identity;
+    setCoachNotes(null);
+    void fetchCoachNotes();
+  }, [result.overallScore, result.durationMs, fetchCoachNotes]);
 
   return (
     <div className="flex flex-col items-center gap-6" style={{ fontFamily: "var(--font-sans)" }}>
@@ -308,6 +508,10 @@ export function Results({ result }: ResultsProps) {
           </p>
         )
       )}
+
+      {/* Async coach notes (Claude-powered) */}
+      {coachLoading && <CoachNotesLoading />}
+      {coachNotes && <CoachNotesPanel notes={coachNotes} />}
     </div>
   );
 }
