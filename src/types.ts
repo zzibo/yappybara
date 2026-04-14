@@ -69,6 +69,12 @@ export type RealtimeCallbacks = {
 /** App-level mode switch. */
 export type AppMode = "grind" | "yap";
 
+/** A single coaching tip from Claude. */
+export type CoachTip = { focus: string; advice: string };
+
+/** Claude-generated coaching notes (async, loaded after instant feedback). */
+export type CoachNotes = { tips: CoachTip[]; drill: string };
+
 /** The 5 rubric dimensions scored for a yap session. */
 export type YapDimension = "accuracy" | "depth" | "clarity" | "examples" | "fluency";
 

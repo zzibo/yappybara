@@ -287,7 +287,9 @@ export default function Home() {
             />
 
             {/* Results (shown above paragraph when done) */}
-            {practiceState === "results" && recorder.result && <Results result={recorder.result} />}
+            {practiceState === "results" && recorder.result && (
+              <Results result={recorder.result} referenceText={paragraph.text} />
+            )}
 
             {/* Paragraph */}
             {practiceState !== "processing" && <ParagraphDisplay words={displayWords} />}
