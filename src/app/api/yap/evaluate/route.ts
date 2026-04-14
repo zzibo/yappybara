@@ -1,6 +1,25 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { type NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import type { YapDimension, YapDimensionScore, YapResult } from "@/types";
+
+// ── Structured output schema ────────────────────────────────────────────────
+
+const YapEvalSchema = z.object({
+  scores: z
+    .array(
+      z.object({
+        dimension: z.enum(["accuracy", "depth", "clarity", "examples", "fluency"]),
+        score: z.number().int().min(1).max(5),
+        feedback: z.string().describe("One-sentence explanation for this dimension's score"),
+      }),
+    )
+    .length(5),
+  strengths: z.array(z.string()).min(2).max(4).describe("2-4 concrete things the speaker did well"),
+  improvements: z.array(z.string()).min(2).max(4).describe("2-4 specific things to improve"),
+  summary: z.string().describe("One-paragraph overall assessment, 2-3 sentences"),
+});
 
 // ── Rate limiter ─────────────────────────────────────────────────────────────
 //
@@ -136,25 +155,8 @@ IMPORTANT:
 - Do NOT penalize accent, pronunciation, or ESL patterns.
 - Be specific in feedback. Reference actual things the speaker said.`;
 
-const OUTPUT_FORMAT = `
-OUTPUT FORMAT — return ONLY a JSON object, no markdown, no commentary:
-
-{
-  "scores": [
-    { "dimension": "accuracy",  "score": <1-5>, "feedback": "<one sentence>" },
-    { "dimension": "depth",     "score": <1-5>, "feedback": "<one sentence>" },
-    { "dimension": "clarity",   "score": <1-5>, "feedback": "<one sentence>" },
-    { "dimension": "examples",  "score": <1-5>, "feedback": "<one sentence>" },
-    { "dimension": "fluency",   "score": <1-5>, "feedback": "<one sentence>" }
-  ],
-  "strengths": ["<2-4 concrete things the speaker did well>"],
-  "improvements": ["<2-4 specific things to improve>"],
-  "summary": "<one-paragraph overall assessment, 2-3 sentences>"
-}`;
-
 function getSystemPrompt(yapType: string): string {
-  const base = yapType === "casual" ? CASUAL_SYSTEM_PROMPT : INTERVIEW_SYSTEM_PROMPT;
-  return base + OUTPUT_FORMAT;
+  return yapType === "casual" ? CASUAL_SYSTEM_PROMPT : INTERVIEW_SYSTEM_PROMPT;
 }
 
 function buildUserMessage(topic: string, transcript: string): string {
@@ -164,57 +166,26 @@ ${topic}
 TRANSCRIPT (auto-generated from speech):
 ${transcript}
 
-Score this explanation using the rubric. Return only the JSON object.`;
+Score this explanation using the rubric.`;
 }
 
-// ── Parse & validate LLM response ────────────────────────────────────────────
-
-type LlmResponse = {
-  scores: Array<{ dimension: string; score: number; feedback: string }>;
-  strengths: string[];
-  improvements: string[];
-  summary: string;
-};
+// ── Score computation ────────────────────────────────────────────────────────
 
 const VALID_DIMENSIONS: YapDimension[] = ["accuracy", "depth", "clarity", "examples", "fluency"];
-
-function extractJson(text: string): string {
-  // Claude may wrap output in ```json ... ``` or include preamble — extract the JSON object
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fence) return fence[1].trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start !== -1 && end > start) return text.slice(start, end + 1);
-  return text.trim();
-}
-
-function parseLlmResponse(text: string): LlmResponse {
-  const json = extractJson(text);
-  const parsed = JSON.parse(json) as unknown;
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("LLM response is not an object");
-  }
-  const obj = parsed as Record<string, unknown>;
-
-  if (!Array.isArray(obj.scores) || obj.scores.length !== 5) {
-    throw new Error("LLM response missing scores array of length 5");
-  }
-
-  return obj as unknown as LlmResponse;
-}
 
 function computeOverall(scores: YapDimensionScore[]): number {
   let sum = 0;
   for (const s of scores) {
     const weight = DIMENSION_WEIGHTS[s.dimension];
-    // Normalize 1-5 → 0-100 (score 1 = 0, score 5 = 100)
     const normalized = ((s.score - 1) / 4) * 100;
     sum += normalized * weight;
   }
   return Math.round(sum);
 }
 
-function normalizeScores(llmScores: LlmResponse["scores"]): YapDimensionScore[] {
+function normalizeScores(
+  llmScores: Array<{ dimension: string; score: number; feedback: string }>,
+): YapDimensionScore[] {
   return VALID_DIMENSIONS.map((dim) => {
     const found = llmScores.find((s) => s.dimension === dim);
     const rawScore = found?.score ?? 3;
@@ -278,14 +249,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Anthropic credentials not configured" }, { status: 500 });
   }
 
-  // Call Claude
+  // Call Claude with structured output
   try {
     const client = new Anthropic({ apiKey });
+    const format = zodOutputFormat(YapEvalSchema);
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
       system: getSystemPrompt(yapType),
       messages: [{ role: "user", content: buildUserMessage(topic, transcript) }],
+      output_config: { format },
     });
 
     const textBlock = response.content.find((b) => b.type === "text");
@@ -293,20 +266,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       throw new Error("No text in Claude response");
     }
 
-    const parsed = parseLlmResponse(textBlock.text);
+    // Constrained decoding guarantees valid JSON; Zod validates the shape.
+    const parsed = format.parse(textBlock.text);
     const scores = normalizeScores(parsed.scores);
     const overallScore = computeOverall(scores);
 
-    // Compute wpm from transcript
     const wordCount = transcript.split(/\s+/).filter(Boolean).length;
     const wpm = durationMs > 0 ? Math.round((wordCount / durationMs) * 60_000) : 0;
 
     const result: YapResult = {
       overallScore,
       scores,
-      strengths: Array.isArray(parsed.strengths) ? parsed.strengths.slice(0, 4) : [],
-      improvements: Array.isArray(parsed.improvements) ? parsed.improvements.slice(0, 4) : [],
-      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+      strengths: parsed.strengths.slice(0, 4),
+      improvements: parsed.improvements.slice(0, 4),
+      summary: parsed.summary,
       transcript,
       durationMs,
       wpm,
