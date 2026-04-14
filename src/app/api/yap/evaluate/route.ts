@@ -64,7 +64,7 @@ const DIMENSION_WEIGHTS: Record<YapDimension, number> = {
   fluency: 0.1,
 };
 
-const SYSTEM_PROMPT = `You are an expert evaluator of verbal technical explanations. A user is given a topic and speaks about it for up to 2 minutes. Your job is to score their spoken explanation on a 5-dimension rubric.
+const INTERVIEW_SYSTEM_PROMPT = `You are an expert evaluator of verbal technical explanations. A user is given a topic and speaks about it for up to 2 minutes. Your job is to score their spoken explanation on a 5-dimension rubric.
 
 Score each dimension from 1 to 5 (integer). Be honest and calibrated — 3 is an average explanation, 5 is exceptional. Do not inflate scores.
 
@@ -98,8 +98,45 @@ THE RUBRIC:
 IMPORTANT:
 - The transcript was auto-generated from speech. Ignore transcription errors, missing punctuation, and minor grammar issues — judge the IDEAS, not the typing.
 - Do NOT penalize accent, pronunciation, or ESL patterns.
-- Be specific in feedback. Reference actual things the speaker said.
+- Be specific in feedback. Reference actual things the speaker said.`;
 
+const CASUAL_SYSTEM_PROMPT = `You are an expert evaluator of spoken communication. A user is given a casual topic and speaks about it for up to 2 minutes. Your job is to score how well they communicate their thoughts on a 5-dimension rubric.
+
+Score each dimension from 1 to 5 (integer). Be honest and calibrated — 3 is an average response, 5 is exceptional. Do not inflate scores.
+
+THE RUBRIC:
+
+1. **Substance & Insight** (weight 25%) — Do they say something meaningful? Is there a real point or perspective, or is it all surface?
+   - 5: Thoughtful, has a clear point of view with genuine insight
+   - 3: Makes a point but stays generic or predictable
+   - 1: Rambling with no coherent takeaway
+
+2. **Depth & Development** (weight 25%) — Do they develop their ideas? Go beyond the obvious?
+   - 5: Explores the topic thoroughly, builds on initial thoughts, considers nuance
+   - 3: Touches the surface but doesn't dig deeper
+   - 1: Barely engages with the topic
+
+3. **Clarity & Structure** (weight 25%) — Logical flow? Easy to follow? Good transitions?
+   - 5: Clear progression, listener never gets lost, natural transitions
+   - 3: Some flow but noticeable jumping between ideas
+   - 1: Incoherent stream-of-consciousness
+
+4. **Examples & Stories** (weight 15%) — Concrete details that make it vivid and relatable?
+   - 5: Rich, specific details or stories that bring the topic to life
+   - 3: Some specifics but mostly abstract or vague
+   - 1: Entirely abstract, no concrete details
+
+5. **Fluency & Confidence** (weight 10%) — Smooth delivery? Minimal filler/hesitation? (Ignore grammar/accent — transcript is auto-generated.)
+   - 5: Natural pace, minimal "um/uh", confident
+   - 3: Noticeable hesitation or fillers but still gets through
+   - 1: Cannot sustain connected speech
+
+IMPORTANT:
+- The transcript was auto-generated from speech. Ignore transcription errors, missing punctuation, and minor grammar issues — judge the IDEAS, not the typing.
+- Do NOT penalize accent, pronunciation, or ESL patterns.
+- Be specific in feedback. Reference actual things the speaker said.`;
+
+const OUTPUT_FORMAT = `
 OUTPUT FORMAT — return ONLY a JSON object, no markdown, no commentary:
 
 {
@@ -114,6 +151,11 @@ OUTPUT FORMAT — return ONLY a JSON object, no markdown, no commentary:
   "improvements": ["<2-4 specific things to improve>"],
   "summary": "<one-paragraph overall assessment, 2-3 sentences>"
 }`;
+
+function getSystemPrompt(yapType: string): string {
+  const base = yapType === "casual" ? CASUAL_SYSTEM_PROMPT : INTERVIEW_SYSTEM_PROMPT;
+  return base + OUTPUT_FORMAT;
+}
 
 function buildUserMessage(topic: string, transcript: string): string {
   return `TOPIC:
@@ -191,6 +233,7 @@ type RequestBody = {
   topic?: unknown;
   transcript?: unknown;
   durationMs?: unknown;
+  yapType?: unknown;
 };
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -215,6 +258,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const topic = typeof body.topic === "string" ? body.topic.trim() : "";
   const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
   const durationMs = typeof body.durationMs === "number" ? body.durationMs : 0;
+  const yapType = body.yapType === "casual" ? "casual" : "interview";
 
   if (!topic || !transcript) {
     return NextResponse.json({ error: "topic and transcript are required" }, { status: 400 });
@@ -240,7 +284,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const response = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1024,
-      system: SYSTEM_PROMPT,
+      system: getSystemPrompt(yapType),
       messages: [{ role: "user", content: buildUserMessage(topic, transcript) }],
     });
 

@@ -5,7 +5,7 @@ import { Waveform } from "@/components/waveform";
 import { YapResults } from "@/components/yap-results";
 import { YapTimer } from "@/components/yap-timer";
 import { YapTranscript } from "@/components/yap-transcript";
-import { type Topic, type TopicCategory, topics } from "@/data/topics";
+import { type Topic, type TopicCategory, type YapType, topics } from "@/data/topics";
 import { useSpeechToken } from "@/hooks/use-speech-token";
 import { useYapRecorder, YAP_DURATION_MS } from "@/hooks/use-yap-recorder";
 import { sounds } from "@/lib/sounds";
@@ -13,7 +13,7 @@ import type { PracticeState, YapResult } from "@/types";
 
 type YapPhase = PracticeState;
 
-const CATEGORY_LABELS: { value: TopicCategory | "all"; label: string }[] = [
+const INTERVIEW_CATEGORIES: { value: TopicCategory | "all"; label: string }[] = [
   { value: "all", label: "all" },
   { value: "cs", label: "cs" },
   { value: "webdev", label: "web" },
@@ -22,10 +22,24 @@ const CATEGORY_LABELS: { value: TopicCategory | "all"; label: string }[] = [
   { value: "general", label: "general" },
 ];
 
-function getRandomTopic(category: TopicCategory | "all", excludeId?: string): Topic {
-  let pool = category === "all" ? topics : topics.filter((t) => t.category === category);
+const CASUAL_CATEGORIES: { value: TopicCategory | "all"; label: string }[] = [
+  { value: "all", label: "all" },
+  { value: "life", label: "life" },
+  { value: "opinions", label: "opinions" },
+  { value: "hypothetical", label: "what if" },
+  { value: "culture", label: "culture" },
+  { value: "wildcard", label: "wildcard" },
+];
+
+function getRandomTopic(
+  yapType: YapType,
+  category: TopicCategory | "all",
+  excludeId?: string,
+): Topic {
+  const typed = topics.filter((t) => t.yapType === yapType);
+  let pool = category === "all" ? typed : typed.filter((t) => t.category === category);
   if (excludeId) pool = pool.filter((t) => t.id !== excludeId);
-  if (pool.length === 0) pool = topics;
+  if (pool.length === 0) pool = typed.length > 0 ? typed : topics;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
@@ -51,6 +65,7 @@ function Hint({ text }: HintProps) {
 }
 
 export function YapMode() {
+  const [yapType, setYapType] = useState<YapType>("interview");
   const [category, setCategory] = useState<TopicCategory | "all">("all");
   const [topic, setTopic] = useState<Topic>(topics[0]);
   const [phase, setPhase] = useState<YapPhase>("idle");
@@ -60,9 +75,11 @@ export function YapMode() {
   const { data: tokenData } = useSpeechToken();
   const recorder = useYapRecorder();
 
+  const categoryLabels = yapType === "interview" ? INTERVIEW_CATEGORIES : CASUAL_CATEGORIES;
+
   // Pick a random starting topic on mount
   useEffect(() => {
-    setTopic(getRandomTopic("all"));
+    setTopic(getRandomTopic("interview", "all"));
   }, []);
 
   // Sync recorder state → phase
@@ -102,6 +119,7 @@ export function YapMode() {
           topic: topic.prompt,
           transcript: recorder.transcript,
           durationMs: recorder.durationMs,
+          yapType: topic.yapType,
         }),
       });
 
@@ -123,22 +141,32 @@ export function YapMode() {
     }
   }, [topic.prompt, recorder]);
 
+  const handleYapTypeChange = useCallback(
+    (type: YapType) => {
+      if (phase !== "idle") return;
+      setYapType(type);
+      setCategory("all");
+      setTopic(getRandomTopic(type, "all"));
+    },
+    [phase],
+  );
+
   const handleCategoryChange = useCallback(
     (cat: TopicCategory | "all") => {
       if (phase !== "idle") return;
       setCategory(cat);
-      setTopic(getRandomTopic(cat));
+      setTopic(getRandomTopic(yapType, cat));
     },
-    [phase],
+    [phase, yapType],
   );
 
   const nextTopic = useCallback(() => {
     setResult(null);
     setEvalError(null);
     recorder.reset();
-    setTopic(getRandomTopic(category, topic.id));
+    setTopic(getRandomTopic(yapType, category, topic.id));
     setPhase("idle");
-  }, [category, topic.id, recorder]);
+  }, [yapType, category, topic.id, recorder]);
 
   // Keyboard handler
   const handleKeyDown = useCallback(
@@ -164,7 +192,7 @@ export function YapMode() {
       if (e.key === "n" && phase === "idle") {
         e.preventDefault();
         sounds.click();
-        setTopic(getRandomTopic(category, topic.id));
+        setTopic(getRandomTopic(yapType, category, topic.id));
       }
 
       if (e.key === "Escape") {
@@ -176,7 +204,7 @@ export function YapMode() {
         setPhase("idle");
       }
     },
-    [phase, tokenData, recorder, nextTopic, category, topic.id],
+    [phase, tokenData, recorder, nextTopic, yapType, category, topic.id],
   );
 
   useEffect(() => {
@@ -201,6 +229,57 @@ export function YapMode() {
 
   return (
     <>
+      {/* Type toggle (only visible when idle or results) */}
+      {phase !== "recording" && phase !== "processing" && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: "2px",
+            fontFamily: "var(--font-mono)",
+            fontSize: "0.7rem",
+            letterSpacing: "0.05em",
+            marginBottom: "6px",
+          }}
+        >
+          {(["interview", "casual"] as const).map((type) => (
+            <button
+              key={type}
+              type="button"
+              className={`yap-type-pill${yapType === type ? " yap-type-pill-active" : ""}`}
+              onClick={() => handleYapTypeChange(type)}
+            >
+              {type === "interview" ? "interview prep" : "just yap"}
+            </button>
+          ))}
+          <style>{`
+            .yap-type-pill {
+              padding: 5px 16px;
+              border-radius: 6px;
+              border: 1px solid var(--yb-bg-sub);
+              cursor: pointer;
+              background: transparent;
+              color: var(--yb-text-sub);
+              font-family: var(--font-mono);
+              font-size: 0.7rem;
+              letter-spacing: 0.05em;
+              font-weight: 400;
+              transition: color 150ms ease, background 150ms ease, border-color 150ms ease;
+            }
+            .yap-type-pill:hover {
+              color: var(--yb-text);
+              border-color: var(--yb-text-sub);
+            }
+            .yap-type-pill-active {
+              background: var(--yb-main);
+              color: var(--yb-bg);
+              border-color: var(--yb-main);
+              font-weight: 600;
+            }
+          `}</style>
+        </div>
+      )}
+
       {/* Category bar (only visible when idle or results) */}
       {phase !== "recording" && phase !== "processing" && (
         <div
@@ -214,7 +293,7 @@ export function YapMode() {
             letterSpacing: "0.03em",
           }}
         >
-          {CATEGORY_LABELS.map(({ value, label }) => {
+          {categoryLabels.map(({ value, label }) => {
             const isActive = category === value;
             return (
               <button
